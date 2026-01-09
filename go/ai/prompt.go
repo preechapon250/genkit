@@ -19,11 +19,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"iter"
 	"log/slog"
 	"maps"
 	"os"
-	"path/filepath"
+	"path"
 	"reflect"
 	"slices"
 	"strings"
@@ -465,13 +466,16 @@ func renderSystemPrompt(ctx context.Context, opts promptOptions, messages []*Mes
 		return nil, err
 	}
 
-	parts, err := renderPrompt(ctx, opts, templateText, input, dp)
+	renderedMessages, err := renderPrompt(ctx, opts, templateText, input, dp)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(parts) != 0 {
-		messages = append(messages, NewSystemMessage(parts...))
+	for _, m := range renderedMessages {
+		if m.Role == "" || (len(renderedMessages) == 1 && m.Role == RoleUser) {
+			m.Role = RoleSystem
+		}
+		messages = append(messages, m)
 	}
 
 	return messages, nil
@@ -488,13 +492,16 @@ func renderUserPrompt(ctx context.Context, opts promptOptions, messages []*Messa
 		return nil, err
 	}
 
-	parts, err := renderPrompt(ctx, opts, templateText, input, dp)
+	renderedMessages, err := renderPrompt(ctx, opts, templateText, input, dp)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(parts) != 0 {
-		messages = append(messages, NewUserMessage(parts...))
+	for _, m := range renderedMessages {
+		if m.Role == "" || (len(renderedMessages) == 1 && m.Role != RoleUser) {
+			m.Role = RoleUser
+		}
+		messages = append(messages, m)
 	}
 
 	return messages, nil
@@ -514,47 +521,72 @@ func renderMessages(ctx context.Context, opts promptOptions, messages []*Message
 	// Create new message copies to avoid mutating shared messages during concurrent execution
 	renderedMsgs := make([]*Message, 0, len(msgs))
 	for _, msg := range msgs {
-		msgParts := []*Part{}
+		hasTextPart := slices.ContainsFunc(msg.Content, (*Part).IsText)
+
+		if !hasTextPart {
+			// Create a new message with non-text content instead of mutating the original
+			renderedMsg := &Message{
+				Role:     msg.Role,
+				Content:  msg.Content,
+				Metadata: msg.Metadata,
+			}
+			renderedMsgs = append(renderedMsgs, renderedMsg)
+			continue
+		}
+
 		for _, part := range msg.Content {
 			if part.IsText() {
-				parts, err := renderPrompt(ctx, opts, part.Text, input, dp)
+				messagesFromText, err := renderPrompt(ctx, opts, part.Text, input, dp)
 				if err != nil {
 					return nil, err
 				}
-				msgParts = append(msgParts, parts...)
+				for _, m := range messagesFromText {
+					// If the rendered message has no role, or it is a single message with default role,
+					// use the original message's role.
+					role := m.Role
+					if role == "" || (len(messagesFromText) == 1 && role == RoleUser) {
+						role = msg.Role
+					}
+					renderedMsgs = append(renderedMsgs, &Message{
+						Role:     role,
+						Content:  m.Content,
+						Metadata: msg.Metadata,
+					})
+				}
 			} else {
-				// Preserve non-text parts as-is
-				msgParts = append(msgParts, part)
+				// Preserve non-text parts as-is in the current last message if possible, or create a new one
+				if len(renderedMsgs) > 0 && renderedMsgs[len(renderedMsgs)-1].Role == msg.Role {
+					renderedMsgs[len(renderedMsgs)-1].Content = append(renderedMsgs[len(renderedMsgs)-1].Content, part)
+				} else {
+					renderedMsgs = append(renderedMsgs, &Message{
+						Role:     msg.Role,
+						Content:  []*Part{part},
+						Metadata: msg.Metadata,
+					})
+				}
 			}
 		}
-		// Create a new message with rendered content instead of mutating the original
-		renderedMsg := &Message{
-			Role:     msg.Role,
-			Content:  msgParts,
-			Metadata: msg.Metadata,
-		}
-		renderedMsgs = append(renderedMsgs, renderedMsg)
 	}
 
 	return append(messages, renderedMsgs...), nil
 }
 
 // renderPrompt renders a prompt template using dotprompt functionalities
-func renderPrompt(ctx context.Context, opts promptOptions, templateText string, input map[string]any, dp *dotprompt.Dotprompt) ([]*Part, error) {
+func renderPrompt(ctx context.Context, opts promptOptions, templateText string, input map[string]any, dp *dotprompt.Dotprompt) ([]*Message, error) {
 	renderedFunc, err := dp.Compile(templateText, &dotprompt.PromptMetadata{})
 	if err != nil {
 		return nil, err
 	}
 
-	return renderDotpromptToParts(ctx, renderedFunc, input, &dotprompt.PromptMetadata{
+	return renderDotpromptToMessages(ctx, renderedFunc, input, &dotprompt.PromptMetadata{
 		Input: dotprompt.PromptMetadataInput{
 			Default: opts.DefaultInput,
 		},
 	})
 }
 
-// renderDotpromptToParts executes a dotprompt prompt function and converts the result to a slice of parts
-func renderDotpromptToParts(ctx context.Context, promptFn dotprompt.PromptFunction, input map[string]any, additionalMetadata *dotprompt.PromptMetadata) ([]*Part, error) {
+// renderDotpromptToMessages executes a dotprompt prompt function and converts the result to a slice of messages
+func renderDotpromptToMessages(ctx context.Context, promptFn dotprompt.PromptFunction, input map[string]any, additionalMetadata *dotprompt.PromptMetadata) ([]*Message, error) {
 	// Prepare the context for rendering
 	context := map[string]any{}
 	actionCtx := core.FromContext(ctx)
@@ -569,16 +601,20 @@ func renderDotpromptToParts(ctx context.Context, promptFn dotprompt.PromptFuncti
 		return nil, fmt.Errorf("failed to render prompt: %w", err)
 	}
 
-	convertedParts := []*Part{}
+	convertedMessages := []*Message{}
 	for _, message := range rendered.Messages {
 		parts, err := convertToPartPointers(message.Content)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert parts: %w", err)
 		}
-		convertedParts = append(convertedParts, parts...)
+		role := Role(message.Role)
+		convertedMessages = append(convertedMessages, &Message{
+			Role:    role,
+			Content: parts,
+		})
 	}
 
-	return convertedParts, nil
+	return convertedMessages, nil
 }
 
 // convertToPartPointers converts []dotprompt.Part to []*Part
@@ -601,87 +637,84 @@ func convertToPartPointers(parts []dotprompt.Part) ([]*Part, error) {
 	return result, nil
 }
 
-// LoadPromptDir loads prompts and partials from the input directory for the given namespace.
-func LoadPromptDir(r api.Registry, dir string, namespace string) {
-	useDefaultDir := false
-	if dir == "" {
-		dir = "./prompts"
-		useDefaultDir = true
+// LoadPromptDirFromFS loads prompts and partials from a filesystem for the given namespace.
+// The fsys parameter should be an fs.FS implementation (e.g., embed.FS or os.DirFS).
+// The dir parameter specifies the directory within the filesystem where prompts are located.
+func LoadPromptDirFromFS(r api.Registry, fsys fs.FS, dir, namespace string) {
+	if fsys == nil {
+		panic(errors.New("no prompt filesystem provided"))
 	}
 
-	path, err := filepath.Abs(dir)
-	if err != nil {
-		if !useDefaultDir {
-			panic(fmt.Errorf("failed to resolve prompt directory %q: %w", dir, err))
-		}
-		slog.Debug("default prompt directory not found, skipping loading .prompt files", "dir", dir)
-		return
+	if _, err := fs.Stat(fsys, dir); err != nil {
+		panic(fmt.Errorf("failed to access prompt directory %q in filesystem: %w", dir, err))
 	}
 
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		if !useDefaultDir {
-			panic(fmt.Errorf("failed to resolve prompt directory %q: %w", dir, err))
-		}
-		slog.Debug("Default prompt directory not found, skipping loading .prompt files", "dir", dir)
-		return
-	}
-
-	loadPromptDir(r, path, namespace)
-}
-
-// loadPromptDir recursively loads prompts and partials from the directory.
-func loadPromptDir(r api.Registry, dir string, namespace string) {
-	entries, err := os.ReadDir(dir)
+	entries, err := fs.ReadDir(fsys, dir)
 	if err != nil {
 		panic(fmt.Errorf("failed to read prompt directory structure: %w", err))
 	}
 
 	for _, entry := range entries {
 		filename := entry.Name()
-		path := filepath.Join(dir, filename)
+		filePath := path.Join(dir, filename)
 		if entry.IsDir() {
-			loadPromptDir(r, path, namespace)
+			LoadPromptDirFromFS(r, fsys, filePath, namespace)
 		} else if strings.HasSuffix(filename, ".prompt") {
 			if strings.HasPrefix(filename, "_") {
 				partialName := strings.TrimSuffix(filename[1:], ".prompt")
-				source, err := os.ReadFile(path)
+				source, err := fs.ReadFile(fsys, filePath)
 				if err != nil {
 					slog.Error("Failed to read partial file", "error", err)
 					continue
 				}
 				r.RegisterPartial(partialName, string(source))
-				slog.Debug("Registered Dotprompt partial", "name", partialName, "file", path)
+				slog.Debug("Registered Dotprompt partial", "name", partialName, "file", filePath)
 			} else {
-				LoadPrompt(r, dir, filename, namespace)
+				LoadPromptFromFS(r, fsys, dir, filename, namespace)
 			}
 		}
 	}
 }
 
-// LoadPrompt loads a single prompt into the registry.
-func LoadPrompt(r api.Registry, dir, filename, namespace string) Prompt {
+// LoadPromptFromFS loads a single prompt from a filesystem into the registry.
+// The fsys parameter should be an fs.FS implementation (e.g., embed.FS or os.DirFS).
+// The dir parameter specifies the directory within the filesystem where the prompt is located.
+func LoadPromptFromFS(r api.Registry, fsys fs.FS, dir, filename, namespace string) Prompt {
 	name := strings.TrimSuffix(filename, ".prompt")
-	name, variant, _ := strings.Cut(name, ".")
 
-	sourceFile := filepath.Join(dir, filename)
-	source, err := os.ReadFile(sourceFile)
+	sourceFile := path.Join(dir, filename)
+	source, err := fs.ReadFile(fsys, sourceFile)
 	if err != nil {
 		slog.Error("Failed to read prompt file", "file", sourceFile, "error", err)
 		return nil
 	}
 
-	dp := r.Dotprompt()
-
-	parsedPrompt, err := dp.Parse(string(source))
+	p, err := LoadPromptFromSource(r, string(source), name, namespace)
 	if err != nil {
-		slog.Error("Failed to parse file as dotprompt", "file", sourceFile, "error", err)
+		slog.Error("Failed to load prompt", "file", sourceFile, "error", err)
 		return nil
 	}
 
-	metadata, err := dp.RenderMetadata(string(source), &parsedPrompt.PromptMetadata)
+	slog.Debug("Registered Dotprompt", "name", p.Name(), "file", sourceFile)
+	return p
+}
+
+// LoadPromptFromSource loads a prompt from raw .prompt file content.
+// The source parameter should contain the complete .prompt file text (frontmatter + template).
+// The name parameter is the prompt name (may include variant suffix like "myPrompt.variant").
+func LoadPromptFromSource(r api.Registry, source, name, namespace string) (Prompt, error) {
+	name, variant, _ := strings.Cut(name, ".")
+
+	dp := r.Dotprompt()
+
+	parsedPrompt, err := dp.Parse(source)
 	if err != nil {
-		slog.Error("Failed to render dotprompt metadata", "file", sourceFile, "error", err)
-		return nil
+		return nil, fmt.Errorf("failed to parse dotprompt: %w", err)
+	}
+
+	metadata, err := dp.RenderMetadata(source, &parsedPrompt.PromptMetadata)
+	if err != nil {
+		return nil, fmt.Errorf("failed to render dotprompt metadata: %w", err)
 	}
 
 	toolRefs := make([]ToolRef, len(metadata.Tools))
@@ -763,55 +796,19 @@ func LoadPrompt(r api.Registry, dir, filename, namespace string) Prompt {
 
 	key := promptKey(name, variant, namespace)
 
-	dpMessages, err := dotprompt.ToMessages(parsedPrompt.Template, &dotprompt.DataArgument{})
-	if err != nil {
-		slog.Error("Failed to convert prompt template to messages", "file", sourceFile, "error", err)
-		return nil
-	}
+	prompt := DefinePrompt(r, key, opts, WithPrompt(parsedPrompt.Template))
 
-	var systemText string
-	var nonSystemMessages []*Message
-	for _, dpMsg := range dpMessages {
-		parts, err := convertToPartPointers(dpMsg.Content)
-		if err != nil {
-			slog.Error("Failed to convert message parts", "file", sourceFile, "error", err)
-			return nil
-		}
+	return prompt, nil
+}
 
-		role := Role(dpMsg.Role)
-		if role == RoleSystem {
-			var textParts []string
-			for _, part := range parts {
-				if part.IsText() {
-					textParts = append(textParts, part.Text)
-				}
-			}
+// LoadPromptDir loads prompts and partials from a directory on the local filesystem.
+func LoadPromptDir(r api.Registry, dir string, namespace string) {
+	LoadPromptDirFromFS(r, os.DirFS(dir), ".", namespace)
+}
 
-			if len(textParts) > 0 {
-				systemText = strings.Join(textParts, " ")
-			}
-		} else {
-			nonSystemMessages = append(nonSystemMessages, &Message{Role: role, Content: parts})
-		}
-	}
-
-	promptOpts := []PromptOption{opts}
-
-	if systemText != "" {
-		promptOpts = append(promptOpts, WithSystem(systemText))
-	}
-
-	if len(nonSystemMessages) > 0 {
-		promptOpts = append(promptOpts, WithMessages(nonSystemMessages...))
-	} else if systemText == "" {
-		promptOpts = append(promptOpts, WithPrompt(parsedPrompt.Template))
-	}
-
-	prompt := DefinePrompt(r, key, promptOpts...)
-
-	slog.Debug("Registered Dotprompt", "name", key, "file", sourceFile)
-
-	return prompt
+// LoadPrompt loads a single prompt from a directory on the local filesystem into the registry.
+func LoadPrompt(r api.Registry, dir, filename, namespace string) Prompt {
+	return LoadPromptFromFS(r, os.DirFS(dir), ".", filename, namespace)
 }
 
 // promptKey generates a unique key for the prompt in the registry.
