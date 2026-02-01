@@ -6,6 +6,7 @@
 """Tests for the Genkit extra API methods."""
 
 from typing import Any
+from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -73,19 +74,22 @@ async def test_genkit_check_operation() -> None:
     """Test Genkit.check_operation method."""
     ai = Genkit()
 
-    op = Operation(id='123', done=False, action='test_action')
+    op = Operation(id='123', done=False, action='/background-model/test_action')
 
-    mock_action = AsyncMock()
-    mock_action.arun.return_value = MagicMock(response=Operation(id='123', done=True, output='result'))
+    # Create mock background action with check method
+    mock_background_action = MagicMock()
+    mock_background_action.check = AsyncMock(return_value=Operation(id='123', done=True, output='result'))
 
-    # Mock registry.resolve_action_by_key
-    ai.registry.resolve_action_by_key = AsyncMock(return_value=mock_action)  # type: ignore[assignment]
+    # Patch lookup_background_action to return our mock
+    with mock.patch(
+        'genkit.blocks.background_model.lookup_background_action',
+        new=AsyncMock(return_value=mock_background_action),
+    ) as mock_lookup:
+        updated_op = await ai.check_operation(op)
 
-    updated_op = await ai.check_operation(op)
-
-    assert updated_op.done is True
-    assert updated_op.output == 'result'
-    ai.registry.resolve_action_by_key.assert_called_with('test_action')  # type: ignore[attr-defined]
+        assert updated_op.done is True
+        assert updated_op.output == 'result'
+        mock_lookup.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -94,7 +98,7 @@ async def test_genkit_check_operation_no_action() -> None:
     ai = Genkit()
     op = Operation(id='123', done=False)  # action is None
 
-    with pytest.raises(ValueError, match='Operation must have an action specified'):
+    with pytest.raises(ValueError, match='Provided operation is missing original request information'):
         await ai.check_operation(op)
 
 
@@ -105,7 +109,7 @@ async def test_genkit_check_operation_not_found() -> None:
     op = Operation(id='123', done=False, action='missing')
     ai.registry.resolve_action_by_key = AsyncMock(return_value=None)  # type: ignore[assignment]
 
-    with pytest.raises(ValueError, match='Action "missing" not found'):
+    with pytest.raises(ValueError, match='Failed to resolve background action from original request: missing'):
         await ai.check_operation(op)
 
 
@@ -169,7 +173,7 @@ async def test_current_context() -> None:
     # current_context is a static method
     assert Genkit.current_context() is None
 
-    context = {'auth': {'uid': '123'}}
+    context: dict[str, object] = {'auth': {'uid': '123'}}
 
     # Simulate being inside an action run using ActionRunContext internal mechanism
     token = _action_context.set(context)
@@ -192,15 +196,6 @@ async def test_flush_tracing() -> None:
     mock_provider = MagicMock(spec=TracerProvider)
     mock_provider.force_flush = MagicMock()
 
-    # We can't easily mock the global provider if it's already set,
-    # but we can check if it calls force_flush if it is a TracerProvider.
-
-    trace_api.get_tracer_provider()
-    trace_api.set_tracer_provider(mock_provider)
-    try:
+    with mock.patch.object(trace_api, 'get_tracer_provider', return_value=mock_provider):
         await ai.flush_tracing()
         mock_provider.force_flush.assert_called_once()
-    finally:
-        # Note: set_tracer_provider can only be called once in real OTel,
-        # but in tests we might be using a mock.
-        pass

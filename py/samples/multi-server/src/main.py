@@ -20,6 +20,50 @@ This sample demonstrates how to run multiple ASGI servers (Litestar, Starlette)
 alongside Genkit's reflection server for complex deployment scenarios.
 
 See README.md for testing instructions.
+
+Key Concepts (ELI5)::
+
+    ┌─────────────────────┬────────────────────────────────────────────────────┐
+    │ Concept             │ ELI5 Explanation                                   │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ ASGI                │ A standard for Python web servers. Like USB       │
+    │                     │ but for connecting web frameworks.                 │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Litestar            │ A modern Python web framework. Fast and           │
+    │                     │ type-safe for building APIs.                       │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Starlette           │ A lightweight ASGI toolkit. The building           │
+    │                     │ block for frameworks like FastAPI.                 │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ ServerManager       │ Runs multiple servers in parallel. Each gets       │
+    │                     │ its own port and can be started/stopped.          │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Reflection Server   │ Genkit's internal server. Provides DevUI           │
+    │                     │ and flow execution endpoints.                      │
+    └─────────────────────┴────────────────────────────────────────────────────┘
+
+Data Flow (Multi-Server Architecture)::
+
+    ┌─────────────────────────────────────────────────────────────────────────┐
+    │                    MULTI-SERVER DEPLOYMENT PATTERN                      │
+    │                                                                         │
+    │    ┌─────────────────────────────────────────────────────────────┐      │
+    │    │                     ServerManager                           │      │
+    │    │  (coordinates all servers, handles shutdown signals)        │      │
+    │    └─────────────────────────────────────────────────────────────┘      │
+    │         │              │                    │                           │
+    │         │              │                    │                           │
+    │         ▼              ▼                    ▼                           │
+    │    ┌──────────┐  ┌──────────┐       ┌──────────────┐                    │
+    │    │ Litestar │  │ Starlette│       │  Reflection  │                    │
+    │    │ :8080    │  │ :8081    │       │  (DevUI)     │                    │
+    │    │          │  │          │       │  :4000       │                    │
+    │    └──────────┘  └──────────┘       └──────────────┘                    │
+    │         │              │                    │                           │
+    │         ▼              ▼                    ▼                           │
+    │    Your API      Health Checks        Genkit Flows                      │
+    │    Endpoints     & Monitoring         & Debugging                       │
+    └─────────────────────────────────────────────────────────────────────────┘
 """
 
 from __future__ import annotations
@@ -28,17 +72,18 @@ import asyncio
 import time
 from typing import Any, cast
 
-import structlog
 from litestar import Controller, Litestar, get, post  # type: ignore
 from litestar.datastructures import State  # type: ignore
 from litestar.logging.config import LoggingConfig  # type: ignore
 from litestar.middleware.base import AbstractMiddleware  # type: ignore
 from litestar.plugins.structlog import StructlogPlugin  # type: ignore
 from litestar.types import Message  # type: ignore
+from rich.traceback import install as install_rich_traceback
 from starlette.applications import Starlette
 
 from genkit.aio.loop import run_loop
 from genkit.core.environment import is_dev_environment
+from genkit.core.logging import get_logger
 from genkit.core.reflection import create_reflection_asgi_app
 from genkit.core.registry import Registry
 from genkit.web.manager import (
@@ -53,14 +98,16 @@ from genkit.web.manager import (
 from genkit.web.manager.signals import terminate_all_servers
 from genkit.web.typing import Application, Receive, Scope, Send
 
-# TODO: Logging middleware > log ALL access requests and fix dups
-# TODO: Logging middleware > access requests different color for each server.
-# TODO: Logging middleware > show the METHOD and path first and then the structure.
-# TODO: Logging middleware > if the response is an error code, highlight in red
+install_rich_traceback(show_locals=True, width=120, extra_lines=3)
+
+# TODO(#4368): Logging middleware > log ALL access requests and fix dups
+# TODO(#4368): Logging middleware > access requests different color for each server.
+# TODO(#4368): Logging middleware > show the METHOD and path first and then the structure.
+# TODO(#4368): Logging middleware > if the response is an error code, highlight in red
 # when logging to the console.
-# TODO: Logger > default configuration and console output and json output
-# TODO: Add opentelemetry integration
-# TODO: replace 'requests' with 'aiohttp' or 'httpx' in genkit
+# TODO(#4369): Logger > default configuration and console output and json output
+# TODO(#4370): Add opentelemetry integration
+# TODO(#4371): replace 'requests' with 'aiohttp' or 'httpx' in genkit
 
 logging_config = LoggingConfig(
     loggers={
@@ -72,7 +119,7 @@ logging_config = LoggingConfig(
 )
 
 
-logger = structlog.get_logger(__name__)
+logger = get_logger(__name__)
 
 
 class LitestarLoggingMiddleware(AbstractMiddleware):
@@ -81,6 +128,7 @@ class LitestarLoggingMiddleware(AbstractMiddleware):
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Process the ASGI request/response cycle with logging."""
         if str(scope['type']) != 'http':
+            # pyrefly: ignore[missing-attribute] - app is from AbstractMiddleware
             await self.app(scope, receive, send)
             return
 
@@ -92,7 +140,8 @@ class LitestarLoggingMiddleware(AbstractMiddleware):
         request_id = str(id(scope))
         try:
             # Extract request headers
-            headers = dict(scope.get('headers', []))
+            raw_headers = scope.get('headers', [])
+            headers = dict(cast(list[tuple[bytes, bytes]], raw_headers))
             formatted_headers = {k.decode('utf-8'): v.decode('utf-8') for k, v in headers.items()}
             await logger.ainfo(
                 f'HTTP Request {method} {path}',
@@ -135,6 +184,7 @@ class LitestarLoggingMiddleware(AbstractMiddleware):
             await send(message)
 
         # Call the next middleware or handler
+        # pyrefly: ignore[missing-attribute] - app is from AbstractMiddleware
         await self.app(scope, receive, wrapped_send)
 
 

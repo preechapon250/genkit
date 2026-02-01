@@ -19,6 +19,30 @@ structured and unstructured AI-generated content.
 
 See README.md for testing instructions.
 
+Key Concepts (ELI5)::
+
+    ┌─────────────────────┬────────────────────────────────────────────────────┐
+    │ Concept             │ ELI5 Explanation                                   │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Output Format       │ What shape the AI's answer takes. Plain text,      │
+    │                     │ structured JSON, or something else.                │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ text                │ Free-form text. Like a normal conversation.        │
+    │                     │ "Once upon a time..."                              │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ json                │ Structured data. AI returns objects you can        │
+    │                     │ use in code: {name: "Bob", age: 25}                │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ array               │ A list of items. ["item1", "item2", "item3"]       │
+    │                     │ Great for generating multiple things.              │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ enum                │ One choice from a list. "What color?" → "blue"     │
+    │                     │ Perfect for classification tasks.                  │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ jsonl               │ Multiple JSON objects, one per line.               │
+    │                     │ For streaming or large datasets.                   │
+    └─────────────────────┴────────────────────────────────────────────────────┘
+
 Output Formats
 ==============
 | Format   | Description                              | Use Case                    |
@@ -34,14 +58,17 @@ import asyncio
 import os
 from typing import Any, cast
 
-import structlog
 from pydantic import BaseModel, Field
+from rich.traceback import install as install_rich_traceback
 
 from genkit.ai import Genkit
+from genkit.core.logging import get_logger
 from genkit.core.typing import OutputConfig
 from genkit.plugins.google_genai import GoogleAI
 
-logger = structlog.get_logger(__name__)
+install_rich_traceback(show_locals=True, width=120, extra_lines=3)
+
+logger = get_logger(__name__)
 
 if 'GEMINI_API_KEY' not in os.environ:
     os.environ['GEMINI_API_KEY'] = input('Please enter your GEMINI_API_KEY: ')
@@ -136,7 +163,7 @@ async def classify_sentiment_enum(input: ClassifySentimentInput) -> str:
 
 
 @ai.flow()
-async def create_story_characters_jsonl(input: CreateStoryCharactersInput) -> list:
+async def create_story_characters_jsonl(input: CreateStoryCharactersInput) -> list[dict[str, object]]:
     """Create characters for a story with a given theme.
 
     Uses the 'jsonl' format which outputs newline-delimited JSON objects.
@@ -187,7 +214,7 @@ async def generate_haiku_text(input: HaikuInput) -> str:
 
 
 @ai.flow()
-async def get_country_info_json(input: CountryInfoInput) -> dict:
+async def get_country_info_json(input: CountryInfoInput) -> dict[str, Any]:
     """Get structured information about a country.
 
     Uses the 'json' format which parses the model's response as a JSON object.
@@ -205,7 +232,7 @@ async def get_country_info_json(input: CountryInfoInput) -> dict:
 
 
 @ai.flow()
-async def recommend_books_array(input: RecommendBooksInput) -> list:
+async def recommend_books_array(input: RecommendBooksInput) -> list[dict[str, object]]:
     """Recommend famous books in a given genre.
 
     Uses the 'array' format which parses the model's response as a JSON array of objects.

@@ -20,10 +20,65 @@ This sample demonstrates Genkit's context caching feature, which allows
 expensive large context (like entire books) to be cached and reused across
 multiple queries, significantly improving response time and cost.
 
+Key Concepts (ELI5)::
+
+    ┌─────────────────────┬────────────────────────────────────────────────────┐
+    │ Concept             │ ELI5 Explanation                                   │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Context Caching     │ Save expensive work to reuse later. Like           │
+    │                     │ pre-cooking a big meal and reheating portions.     │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Large Context       │ Big documents (books, manuals, codebases).         │
+    │                     │ Expensive to process every time.                   │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ TTL (Time-To-Live)  │ How long the cache stays valid. After 5 min,       │
+    │                     │ it expires and must be re-created.                 │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Cache Hit           │ Using cached context - FAST! Saves money           │
+    │                     │ and time by reusing previous work.                 │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Cache Miss          │ No cache available - must process from scratch.    │
+    │                     │ Slower, but creates cache for next time.           │
+    └─────────────────────┴────────────────────────────────────────────────────┘
+
+Data Flow (Context Caching)::
+
+    ┌─────────────────────────────────────────────────────────────────────────┐
+    │                   HOW CONTEXT CACHING SAVES TIME                        │
+    │                                                                         │
+    │    FIRST REQUEST (Cache Miss - creates cache)                           │
+    │    ─────────────────────────────────────────                            │
+    │    Query + Entire Book                                                  │
+    │         │                                                               │
+    │         │  (1) Send full context (slow, expensive)                      │
+    │         ▼                                                               │
+    │    ┌─────────────────┐                                                  │
+    │    │  Gemini API     │   Processes book, caches internally              │
+    │    │  (with cache)   │   Returns: response + cache_id                   │
+    │    └────────┬────────┘                                                  │
+    │             │   Time: ~10 seconds, Cost: $$$                            │
+    │                                                                         │
+    │    FOLLOW-UP REQUESTS (Cache Hit - uses cache)                          │
+    │    ───────────────────────────────────────────                          │
+    │    Query + cache_id (no book needed!)                                   │
+    │         │                                                               │
+    │         │  (2) Just send new question                                   │
+    │         ▼                                                               │
+    │    ┌─────────────────┐                                                  │
+    │    │  Gemini API     │   Uses cached context, answers quickly           │
+    │    │  (cache hit!)   │                                                  │
+    │    └────────┬────────┘                                                  │
+    │             │   Time: ~1 second, Cost: $                                │
+    │                                                                         │
+    │    Savings: 90% faster, 90% cheaper for follow-up questions!            │
+    └─────────────────────────────────────────────────────────────────────────┘
+
 Key Features
 ============
 | Feature Description                     | Example Function / Code Snippet     |
 |-----------------------------------------|-------------------------------------|
+| Plugin Initialization                   | `ai = Genkit(plugins=[GoogleAI()])` |
+| Default Model Configuration             | `ai = Genkit(model=...)`            |
 | Context Caching Config                  | `metadata={'cache': {'ttl_seconds': 300}}` |
 | URL Content Fetching                    | `httpx.AsyncClient().get()`         |
 | Message History Reuse                   | `messages=messages_history`         |
@@ -38,24 +93,29 @@ How Context Caching Works
 See README.md for testing instructions.
 """
 
+import asyncio
 import os
 
 import httpx
-import structlog
 from pydantic import BaseModel, Field
+from rich.traceback import install as install_rich_traceback
 
 from genkit.ai import Genkit
+from genkit.core.logging import get_logger
 from genkit.plugins.google_genai import GoogleAI
 from genkit.types import GenerationCommonConfig, Message, Part, Role, TextPart
+
+install_rich_traceback(show_locals=True, width=120, extra_lines=3)
 
 if 'GEMINI_API_KEY' not in os.environ:
     os.environ['GEMINI_API_KEY'] = input('Please enter your GEMINI_API_KEY: ')
 
-logger = structlog.get_logger(__name__)
+logger = get_logger(__name__)
+
 
 ai = Genkit(
     plugins=[GoogleAI()],
-    model='googleai/gemini-2.0-flash-001',
+    model='googleai/gemini-3-pro-preview',
 )
 
 
@@ -114,7 +174,6 @@ async def text_context_flow(_input: BookContextInputSchema) -> str:
             ),
         ],
         config=GenerationCommonConfig(
-            version='gemini-2.0-flash-001',
             temperature=0.7,
             max_output_tokens=1000,
             top_k=50,
@@ -167,8 +226,6 @@ async def main() -> None:
     This function demonstrates how to use context caching in Genkit for
     improved performance.
     """
-    import asyncio
-
     await logger.ainfo('Genkit server running. Press Ctrl+C to stop.')
     # Keep the process alive for Dev UI
     await asyncio.Event().wait()

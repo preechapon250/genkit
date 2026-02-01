@@ -19,6 +19,24 @@
 This sample demonstrates how to use Vertex AI's Imagen model for
 high-quality image generation through Genkit.
 
+Key Concepts (ELI5)::
+
+    ┌─────────────────────┬────────────────────────────────────────────────────┐
+    │ Concept             │ ELI5 Explanation                                   │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Imagen              │ Google's image generation AI. Describe what you    │
+    │                     │ want, it draws it for you.                         │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Text-to-Image       │ Type words, get a picture. "A cat on a roof"       │
+    │                     │ → image of a cat on a roof.                        │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Base64              │ A way to encode images as text. Allows embedding   │
+    │                     │ images in JSON responses.                          │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Media URL           │ A link to the generated image. Download or         │
+    │                     │ display directly in your app.                      │
+    └─────────────────────┴────────────────────────────────────────────────────┘
+
 Key Features
 ============
 | Feature Description                     | Example Function / Code Snippet     |
@@ -35,20 +53,28 @@ import os
 from io import BytesIO
 
 from PIL import Image
+from rich.traceback import install as install_rich_traceback
 
 from genkit.ai import Genkit
 from genkit.blocks.model import GenerateResponseWrapper
 from genkit.plugins.google_genai import VertexAI
 
+install_rich_traceback(show_locals=True, width=120, extra_lines=3)
+
+# Check for GCLOUD_PROJECT or GOOGLE_CLOUD_PROJECT
+# If GOOGLE_CLOUD_PROJECT is set but GCLOUD_PROJECT isn't, use it
 if 'GCLOUD_PROJECT' not in os.environ:
-    os.environ['GCLOUD_PROJECT'] = input('Please enter your GCLOUD_PROJECT: ')
+    if 'GOOGLE_CLOUD_PROJECT' in os.environ:
+        os.environ['GCLOUD_PROJECT'] = os.environ['GOOGLE_CLOUD_PROJECT']
+    else:
+        os.environ['GCLOUD_PROJECT'] = input('Please enter your GCLOUD_PROJECT_ID: ')
 
 ai = Genkit(plugins=[VertexAI()])
 
 
 @ai.flow()
 async def draw_image_with_imagen() -> GenerateResponseWrapper:
-    """Draw an image.
+    """Draw an image using Imagen model.
 
     Returns:
         The image.
@@ -60,6 +86,7 @@ async def draw_image_with_imagen() -> GenerateResponseWrapper:
         'add_watermark': False,
     }
 
+    # pyrefly: ignore[no-matching-overload] - config dict is compatible with dict[str, object]
     return await ai.generate(
         prompt='Draw a cat in a hat',
         model='vertexai/imagegeneration@006',
@@ -76,7 +103,9 @@ async def main() -> None:
     if not result.message or not result.message.content:
         print('No image generated.')
         return
-    media_url = result.message.content[0].root.media.url if result.message.content[0].root.media else ''
+    # pyrefly: ignore[missing-attribute] - MediaModel has url attribute
+    media = result.message.content[0].root.media
+    media_url = media.url if media and hasattr(media, 'url') else ''
     if not media_url:
         print('No media URL found in response.')
         return

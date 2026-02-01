@@ -19,6 +19,27 @@
 This sample demonstrates how to use Gemini's server-side code execution
 feature, which allows the model to write and execute Python code.
 
+Key Concepts (ELI5)::
+
+    ┌─────────────────────┬────────────────────────────────────────────────────┐
+    │ Concept             │ ELI5 Explanation                                   │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Code Execution      │ AI writes Python code AND runs it. Ask "what's     │
+    │                     │ 2+2?" and it actually calculates, not guesses.     │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Server-side         │ Code runs on Google's servers, not your computer.  │
+    │                     │ Safe sandbox environment.                          │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Executable Code     │ The Python code Gemini writes to solve your        │
+    │                     │ problem. You can see what it created.              │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Execution Result    │ The output from running the code. Numbers,         │
+    │                     │ data, or error messages.                           │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ CustomPart          │ Special response parts containing code or          │
+    │                     │ results. Parse them to show the user.              │
+    └─────────────────────┴────────────────────────────────────────────────────┘
+
 Key Features
 ============
 | Feature Description                     | Example Function / Code Snippet     |
@@ -32,39 +53,45 @@ See README.md for testing instructions.
 """
 
 import os
-from typing import Annotated
 
-import structlog
-from pydantic import Field
+from pydantic import BaseModel, Field
+from rich.traceback import install as install_rich_traceback
 
 from genkit.ai import Genkit
 from genkit.blocks.model import MessageWrapper
+from genkit.core.logging import get_logger
 from genkit.core.typing import CustomPart, Message, TextPart
 from genkit.plugins.google_genai import GeminiConfigSchema, GoogleAI
 from genkit.plugins.google_genai.models.utils import PartConverter
 
+install_rich_traceback(show_locals=True, width=120, extra_lines=3)
+
 if 'GEMINI_API_KEY' not in os.environ:
     os.environ['GEMINI_API_KEY'] = input('Please enter your GEMINI_API_KEY: ')
 
-logger = structlog.get_logger(__name__)
+logger = get_logger(__name__)
 
 ai = Genkit(
     plugins=[GoogleAI()],
-    model='googleai/gemini-3-flash-preview',
+    model='googleai/gemini-3-pro-preview',
 )
 
 
 DEFAULT_CODE_TASK = 'What is the sum of the first 50 prime numbers?'
 
 
+class CodeExecutionInput(BaseModel):
+    """Input for code execution flow."""
+
+    task: str = Field(default=DEFAULT_CODE_TASK, description='Task to execute code for')
+
+
 @ai.flow()
-async def execute_code(
-    task: Annotated[str, Field(default=DEFAULT_CODE_TASK)] = DEFAULT_CODE_TASK,
-) -> MessageWrapper:
+async def execute_code(input: CodeExecutionInput) -> MessageWrapper:
     """Execute code for the given task.
 
     Args:
-        task: the task to send to test function
+        input: Input with task to execute code for.
 
     Returns:
         The generated response enclosed in a MessageWrapper. The content field should contain the following:
@@ -73,8 +100,8 @@ async def execute_code(
         3. Textpart describing code and output generated.
     """
     response = await ai.generate(
-        prompt=f'Generate and run code for the task: {task}',
-        config=GeminiConfigSchema(temperature=1, code_execution=True).model_dump(),
+        prompt=f'Generate and run code for the task: {input.task}',
+        config=GeminiConfigSchema.model_validate({'temperature': 1, 'code_execution': True}).model_dump(),
     )
     if not response.message:
         raise ValueError('No message returned from model')
@@ -115,7 +142,7 @@ async def main() -> None:
     This function demonstrates how to perform code execution using the
     Genkit framework.
     """
-    response_msg = await execute_code('What is the sum of the first 50 prime numbers?')
+    response_msg = await execute_code(CodeExecutionInput(task='What is the sum of the first 50 prime numbers?'))
     display_code_execution(response_msg)
     await logger.ainfo(response_msg.text)
 

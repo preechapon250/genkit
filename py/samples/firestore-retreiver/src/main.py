@@ -20,6 +20,60 @@
 This sample demonstrates how to use Firestore as a vector store for
 retrieval-augmented generation (RAG) with Genkit.
 
+Key Concepts (ELI5)::
+
+    ┌─────────────────────┬────────────────────────────────────────────────────┐
+    │ Concept             │ ELI5 Explanation                                   │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Firestore           │ Google's NoSQL database. Stores documents like     │
+    │                     │ JSON files that sync across devices.               │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Vector Search       │ Finding similar items by meaning, not keywords.    │
+    │                     │ "Happy" finds docs about "joyful" too.             │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ RAG                 │ Retrieval-Augmented Generation. AI looks up        │
+    │                     │ your docs before answering. More accurate!         │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Embedding           │ Numbers that capture meaning. Similar text gets    │
+    │                     │ similar numbers (close in vector space).           │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Retriever           │ The component that finds matching documents.       │
+    │                     │ "Find docs about sci-fi" returns relevant results. │
+    └─────────────────────┴────────────────────────────────────────────────────┘
+
+Data Flow (RAG with Firestore)::
+
+    ┌─────────────────────────────────────────────────────────────────────────┐
+    │           HOW FIRESTORE VECTOR SEARCH FINDS YOUR DOCUMENTS              │
+    │                                                                         │
+    │    INDEXING (Setup)                                                     │
+    │    ─────────────────                                                    │
+    │    Documents → Embedder → Firestore (stored with vectors)               │
+    │                                                                         │
+    │    RETRIEVAL (Query Time)                                               │
+    │    ───────────────────────                                              │
+    │    Query: "sci-fi films"                                                │
+    │         │                                                               │
+    │         │  (1) Convert query to embedding                               │
+    │         ▼                                                               │
+    │    ┌─────────────────┐                                                  │
+    │    │  Embedder       │   "sci-fi films" → [0.2, -0.5, ...]              │
+    │    └────────┬────────┘                                                  │
+    │             │                                                           │
+    │             │  (2) Search Firestore for similar vectors                 │
+    │             ▼                                                           │
+    │    ┌─────────────────┐                                                  │
+    │    │  Firestore      │   Vector similarity search                       │
+    │    │  (Native Index) │   Returns closest matches                        │
+    │    └────────┬────────┘                                                  │
+    │             │                                                           │
+    │             │  (3) Return matching documents                            │
+    │             ▼                                                           │
+    │    ┌─────────────────┐                                                  │
+    │    │  Results        │   "The Matrix", "Inception", etc.                │
+    │    └─────────────────┘                                                  │
+    └─────────────────────────────────────────────────────────────────────────┘
+
 Key Features
 ============
 | Feature Description                     | Example Function / Code Snippet     |
@@ -37,11 +91,14 @@ import os
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_vector_query import DistanceMeasure
 from google.cloud.firestore_v1.vector import Vector
+from rich.traceback import install as install_rich_traceback
 
 from genkit.ai import Genkit
 from genkit.plugins.firebase import add_firebase_telemetry, define_firestore_vector_store
 from genkit.plugins.google_genai import VertexAI
 from genkit.types import Document, RetrieverResponse
+
+install_rich_traceback(show_locals=True, width=120, extra_lines=3)
 
 if 'GCLOUD_PROJECT' not in os.environ:
     os.environ['GCLOUD_PROJECT'] = input('Please enter your GCLOUD_PROJECT: ')

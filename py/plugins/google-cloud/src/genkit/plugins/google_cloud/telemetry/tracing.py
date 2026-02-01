@@ -410,7 +410,12 @@ class GenkitMetricExporter(MetricExporter):
                     for data_point in metric.data.data_points:
                         # Add 1 millisecond (1_000_000 nanoseconds) to start time
                         if hasattr(data_point, 'start_time_unix_nano'):
-                            data_point.start_time_unix_nano += 1_000_000
+                            # pyrefly: ignore[read-only] - modifying frozen dataclass via workaround
+                            object.__setattr__(
+                                data_point,
+                                'start_time_unix_nano',
+                                data_point.start_time_unix_nano + 1_000_000,
+                            )
 
     def force_flush(self, timeout_millis: float = 10_000) -> bool:
         """Force flush the underlying exporter.
@@ -533,7 +538,7 @@ class GcpAdjustingTraceExporter(AdjustingTraceExporter):
                 state = attrs.get('genkit:state')
                 if state:
                     # Import here to avoid circular imports
-                    from genkit.core.trace.adjusting_exporter import RedactedSpan
+                    from genkit.core.trace.adjusting_exporter import RedactedSpan  # noqa: PLC0415
 
                     new_attrs = dict(attrs)
                     new_attrs['genkit:rootState'] = state
@@ -544,7 +549,7 @@ class GcpAdjustingTraceExporter(AdjustingTraceExporter):
                     generate_telemetry.tick(span, self._log_input_and_output, self._project_id)
 
                 if span_type == 'action' and subtype == 'tool':
-                    # TODO: Report input and output for tool actions (matching JS comment)
+                    # TODO(#4359): Report input and output for tool actions (matching JS comment)
                     pass
 
                 if span_type in ('action', 'flow', 'flowStep', 'util'):

@@ -22,6 +22,24 @@ analysis system.
 
 See README.md for testing instructions.
 
+Key Concepts (ELI5)::
+
+    ┌─────────────────────┬────────────────────────────────────────────────────┐
+    │ Concept             │ ELI5 Explanation                                   │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Multi-file App      │ Code split across multiple files. Each file        │
+    │                     │ handles one part (prompts, flows, tools).          │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Module Organization │ Separate files for different concerns.             │
+    │                     │ case_01/prompts.py, case_02/flows.py, etc.         │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Flow Registration   │ Importing a module registers its flows.            │
+    │                     │ Just import it and Genkit knows about it.          │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Menu Analysis       │ AI reads menus and answers questions.              │
+    │                     │ "What vegetarian options are there?"               │
+    └─────────────────────┴────────────────────────────────────────────────────┘
+
 Key Features
 ============
 | Feature Description                     | Example Function / Code Snippet     |
@@ -34,26 +52,30 @@ Key Features
 # Import all of the example prompts and flows to ensure they are registered
 import asyncio
 
+from rich.traceback import install as install_rich_traceback
+
+install_rich_traceback(show_locals=True, width=120, extra_lines=3)
+
 # Import case modules to register flows and prompts with the ai instance
-from .case_01 import prompts as case_01_prompts  # noqa: F401
-from .case_02 import (
+from case_01 import prompts as case_01_prompts  # noqa: F401
+from case_02 import (
     flows as case_02_flows,  # noqa: F401
     prompts as case_02_prompts,  # noqa: F401
     tools as case_02_tools,  # noqa: F401
 )
-from .case_03 import (
+from case_03 import (
     flows as case_03_flows,  # noqa: F401
     prompts as case_03_prompts,  # noqa: F401
 )
-from .case_04 import (
+from case_04 import (
     flows as case_04_flows,  # noqa: F401
     prompts as case_04_prompts,  # noqa: F401
 )
-from .case_05 import (
+from case_05 import (
     flows as case_05_flows,  # noqa: F401
     prompts as case_05_prompts,  # noqa: F401
 )
-from .menu_ai import ai
+from menu_ai import ai
 
 print('All prompts and flows loaded, use the Developer UI to test them out')
 

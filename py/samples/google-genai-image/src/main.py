@@ -19,10 +19,33 @@
 This sample demonstrates Gemini's native image generation and editing
 capabilities, including text-to-image, image description, and Veo video.
 
+Key Concepts (ELI5)::
+
+    ┌─────────────────────┬────────────────────────────────────────────────────┐
+    │ Concept             │ ELI5 Explanation                                   │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Text-to-Image       │ Type words, get a picture. "A sunset over ocean"   │
+    │                     │ → AI creates that image for you.                   │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Image-to-Text       │ Show AI an image, it describes what's in it.       │
+    │                     │ Like a friend explaining a photo.                  │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Inpainting          │ Fix or change parts of an existing image.          │
+    │                     │ "Remove the person, add a tree."                   │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Outpainting         │ Extend an image beyond its borders.                │
+    │                     │ Make a portrait into a landscape.                  │
+    ├─────────────────────┼────────────────────────────────────────────────────┤
+    │ Veo                 │ Google's video generation AI. Same as images,      │
+    │                     │ but creates video clips instead.                   │
+    └─────────────────────┴────────────────────────────────────────────────────┘
+
 Key Features
 ============
 | Feature Description                     | Example Function / Code Snippet     |
 |-----------------------------------------|-------------------------------------|
+| Plugin Initialization                   | `ai = Genkit(plugins=[GoogleAI()])` |
+| Default Model Configuration             | `ai = Genkit(model=...)`            |
 | Text-to-Image Generation                | `draw_image_with_gemini`            |
 | Image-to-Text (Description)             | `describe_image_with_gemini`        |
 | Multimodal Prompting                    | `generate_images`                   |
@@ -38,15 +61,16 @@ import base64
 import logging
 import os
 import pathlib
-from typing import Annotated
 
 from google import genai
 from google.genai import types as genai_types
-from pydantic import Field
+from pydantic import BaseModel, Field
+from rich.traceback import install as install_rich_traceback
 
 from genkit.ai import Genkit
 from genkit.blocks.model import GenerateResponseWrapper
 from genkit.core.action import ActionRunContext
+from genkit.core.logging import get_logger
 from genkit.plugins.google_genai import (
     GeminiConfigSchema,
     GeminiImageConfigSchema,
@@ -63,26 +87,43 @@ from genkit.types import (
     TextPart,
 )
 
+install_rich_traceback(show_locals=True, width=120, extra_lines=3)
+
+logger = get_logger(__name__)
+
 if 'GEMINI_API_KEY' not in os.environ:
     os.environ['GEMINI_API_KEY'] = input('Please enter your GEMINI_API_KEY: ')
 
-ai = Genkit(plugins=[GoogleAI()])
+ai = Genkit(
+    plugins=[GoogleAI()],
+    model='googleai/gemini-3-pro-image-preview',
+)
+
+
+class DrawImageInput(BaseModel):
+    """Input for image drawing flow."""
+
+    prompt: str = Field(default='Draw a cat in a hat.', description='Image prompt')
+
+
+class GenerateImagesInput(BaseModel):
+    """Input for image generation flow."""
+
+    name: str = Field(default='a fluffy cat', description='Subject to generate images about')
 
 
 @ai.flow()
-async def draw_image_with_gemini(
-    prompt: Annotated[str, Field(default='Draw a cat in a hat.')] = 'Draw a cat in a hat.',
-) -> GenerateResponseWrapper:
+async def draw_image_with_gemini(input: DrawImageInput) -> GenerateResponseWrapper:
     """Draw an image.
 
     Args:
-        prompt: The prompt to draw.
+        input: Input with image prompt.
 
     Returns:
         The image.
     """
     return await ai.generate(
-        prompt=prompt,
+        prompt=input.prompt,
         config={'response_modalities': ['Text', 'Image']},
         model='googleai/gemini-2.5-flash-image',
     )
@@ -129,13 +170,13 @@ async def describe_image_with_gemini(data: str = '') -> str:
 
 @ai.flow()
 async def generate_images(
-    name: Annotated[str, Field(default='Eiffel Tower')] = 'Eiffel Tower',
-    ctx: ActionRunContext = None,  # type: ignore[assignment]
+    input: GenerateImagesInput,
+    ctx: ActionRunContext | None = None,
 ) -> GenerateResponseWrapper:
     """Generate images for the given name.
 
     Args:
-        name: the name to send to test function
+        input: Input with subject to generate images about.
         ctx: the context of the tool
 
     Returns:
@@ -143,10 +184,11 @@ async def generate_images(
     """
     return await ai.generate(
         model='googleai/gemini-3-pro-image-preview',
-        prompt=f'tell me about {name} with photos',
-        config=GeminiConfigSchema(response_modalities=['text', 'image'], api_version='v1alpha').model_dump(
-            exclude_none=True
-        ),
+        prompt=f'tell me about {input.name} with photos',
+        config=GeminiConfigSchema.model_validate({
+            'response_modalities': ['text', 'image'],
+            'api_version': 'v1alpha',
+        }).model_dump(exclude_none=True),
     )
 
 
@@ -193,11 +235,11 @@ async def gemini_image_editing() -> Media | None:
             Part(root=MediaPart(media=Media(url=f'data:image/png;base64,{plant_b64}'))),
             Part(root=MediaPart(media=Media(url=f'data:image/png;base64,{room_b64}'))),
         ],
-        config=GeminiImageConfigSchema(
-            response_modalities=['TEXT', 'IMAGE'],
-            image_config={'aspect_ratio': '1:1'},
-            api_version='v1alpha',
-        ).model_dump(exclude_none=True),
+        config=GeminiImageConfigSchema.model_validate({
+            'response_modalities': ['TEXT', 'IMAGE'],
+            'image_config': {'aspect_ratio': '1:1'},
+            'api_version': 'v1alpha',
+        }).model_dump(exclude_none=True),
     )
     for part in response.message.content if response.message else []:
         if isinstance(part.root, MediaPart):
